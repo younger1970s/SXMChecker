@@ -159,6 +159,9 @@ def ico_frame_sizes(icon_path):
 HISTORY_RELATIVE = "history.json"
 HISTORY_LIMIT = 15          # newest first; older entries fall off the end
 UNKNOWN_EXPIRY = "Unknown"
+RADIO_ID_MIN = 8            # a Radio ID, or a 12-digit id
+VIN_LENGTH = 17             # a VIN is the longest input, so nothing needs to be wider
+RECENT_WIDTH = 30           # minimum width of the Recent box, in characters (it also stretches)
 
 
 def history_path():
@@ -174,7 +177,8 @@ def history_path():
 
 def valid_radio_id(value):
     """True for anything shaped like a Radio ID / VIN / 12-digit id."""
-    return bool(re.fullmatch(r"[A-Z0-9]{8,17}", normalize_id(value or "")))
+    return bool(re.fullmatch(rf"[A-Z0-9]{{{RADIO_ID_MIN},{VIN_LENGTH}}}",
+                             normalize_id(value or "")))
 
 
 def normalize_expiry(value):
@@ -224,9 +228,13 @@ def load_history(path=None):
 
 
 def history_label(entry):
-    """Menu text for one entry: the Radio ID plus the expiry the checker found."""
+    """Menu text for one entry: the Radio ID plus the expiry the checker found.
+
+    The ID is padded to a VIN width and the menu uses a monospace font, so every
+    expiry lines up in one column instead of stepping in and out with the ID.
+    """
     end = entry["endDate"]
-    return f"{entry['id']} - expires {end}" if end else f"{entry['id']} - {UNKNOWN_EXPIRY}"
+    return f"{entry['id']:<{VIN_LENGTH}} - " + (f"expires {end}" if end else UNKNOWN_EXPIRY)
 
 
 def save_history(entries, path=None):
@@ -566,13 +574,20 @@ def run_selftest(out_path=None):
     expect("history path is an absolute per-user file",
            history_path().is_absolute() and history_path().suffix == ".json",
            str(history_path()))
-    expect("an unknown expiry reads as Unknown",
-           history_label({"id": "ABC12345", "endDate": None}) == "ABC12345 - Unknown",
-           history_label({"id": "ABC12345", "endDate": None}))
+    unknown = history_label({"id": "ABC12345", "endDate": None})
+    known = history_label({"id": "ABC12345", "endDate": "2026-10-03"})
+    expect("an unknown expiry reads as Unknown", unknown.split(" - ")[-1] == UNKNOWN_EXPIRY, unknown)
     expect("a known expiry is shown with its date",
-           history_label({"id": "ABC12345", "endDate": "2026-10-03"})
-           == "ABC12345 - expires 2026-10-03",
-           history_label({"id": "ABC12345", "endDate": "2026-10-03"}))
+           known.split(" - ")[-1] == "expires 2026-10-03", known)
+    expect("the id is padded to VIN width so the dates line up in a column",
+           all(len(history_label(entry).split(" - ")[0]) == VIN_LENGTH
+               for entry in ({"id": "AB12CD34", "endDate": None},
+                             {"id": "Z" * VIN_LENGTH, "endDate": "2026-10-03"})),
+           repr(unknown))
+    expect("a full VIN is the widest valid id, so the field needs no more room",
+           valid_radio_id("1FTRX12W45KA12345") and len("1FTRX12W45KA12345") == VIN_LENGTH
+           and not valid_radio_id("1FTRX12W45KA123456"),
+           f"VIN_LENGTH={VIN_LENGTH}")
 
     def ids(entries):
         return [entry["id"] for entry in entries]
@@ -719,11 +734,16 @@ class CheckerApp:
 
         form = ttk.Frame(main)
         form.grid(row=2, column=0, sticky="ew")
-        form.columnconfigure(1, weight=1)
+        # The Recent box takes whatever width the row has left, so it grows with
+        # the window instead of the Radio ID field, which only needs a VIN.
+        form.columnconfigure(4, weight=1)
         ttk.Label(form, text="Radio ID:").grid(row=0, column=0, sticky="w", padx=(0, 8))
         self.radio_var = tk.StringVar()
-        self.radio_entry = ttk.Entry(form, textvariable=self.radio_var, font=("Consolas", 12))
-        self.radio_entry.grid(row=0, column=1, sticky="ew")
+        # One spare character past a full VIN, and no wider: the field cannot
+        # hold anything longer anyway.
+        self.radio_entry = ttk.Entry(form, textvariable=self.radio_var,
+                                     width=VIN_LENGTH + 1, font=("Consolas", 12))
+        self.radio_entry.grid(row=0, column=1, sticky="w")
         self.radio_entry.bind("<Return>", lambda _e: self.start_check())
         self.radio_entry.bind("<KeyRelease>", self._uppercase)
 
@@ -734,10 +754,16 @@ class CheckerApp:
         self.region_box.grid(row=0, column=3, sticky="w")
 
         self.history = load_history()
-        self.history_button = ttk.Menubutton(form, text="Recent \u25be")
-        self.history_menu = tk.Menu(self.history_button, tearoff=False)
+        # A wide box only reads as a drop-down if its label sits on the left; ttk
+        # exposes that through the style rather than the widget.
+        try:
+            ttk.Style().configure("TMenubutton", anchor="w")
+        except tk.TclError:
+            pass
+        self.history_button = ttk.Menubutton(form, text="Recent \u25be", width=RECENT_WIDTH)
+        self.history_menu = tk.Menu(self.history_button, tearoff=False, font=("Consolas", 9))
         self.history_button.configure(menu=self.history_menu)
-        self.history_button.grid(row=0, column=4, sticky="w", padx=(12, 0))
+        self.history_button.grid(row=0, column=4, sticky="ew", padx=(12, 0))
         self._refresh_history_menu()
 
         actions = ttk.Frame(main)

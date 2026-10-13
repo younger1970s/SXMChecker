@@ -65,7 +65,9 @@ public page instead. Nothing here can renew or change a subscription.
 ## Recent Radio IDs (one click to re-check)
 
 **Recent** in the form row remembers the IDs that have been through the app, so
-you do not have to retype one:
+you do not have to retype one. The Radio ID field is only as wide as the longest
+thing it accepts (a 17-character VIN), which leaves Recent the room to be a long
+box: it takes any leftover width and grows as the window does.
 
 - An ID is remembered when you press **Check Subscription** or **Request Signal
   View Web**.
@@ -73,7 +75,8 @@ you do not have to retype one:
   Radio ID field (it is not checked on its own — press the button when ready).
 - Each entry carries the **expiry date the last check found**, so the menu reads
   `DEMO0001 - expires 2099-10-01`. Until a check has produced a date it reads
-  `SAMPLE03 - Unknown`.
+  `SAMPLE03 - Unknown`. The menu is monospaced and pads the ID to a VIN's width,
+  so the dates line up in one column however long the IDs are.
 - Reusing an ID moves it back to the top, duplicates collapse, and the list stops
   at **15** entries, dropping the oldest.
 - **Clear history** at the bottom of the menu empties the list.

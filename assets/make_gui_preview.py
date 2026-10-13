@@ -78,11 +78,14 @@ def main():
      runs in <code>%APPDATA%\SXMChecker\history.json</code> (up to 15 IDs), and
      <b>Clear history</b> at the bottom of the menu removes it - including the
      file's contents.</p>
-  <p>Until a check has produced a date the entry reads <code>Unknown</code>, so
-     the menu looks like this:</p>
-  <pre>DEMO0001 - expires 2099-10-01
-TEST0002 - expires 2027-06-30
-SAMPLE03 - Unknown</pre>
+  <p>The Radio ID field is sized for a VIN (17 characters, the longest ID
+     accepted), and <b>Recent</b> takes the width that frees up. The menu itself
+     is monospaced and pads the ID to that same width, so the expiries line up in
+     one column; until a check has produced a date the entry reads
+     <code>Unknown</code>:</p>
+  <pre>DEMO0001          - expires 2099-10-01
+TEST0002          - expires 2027-06-30
+SAMPLE03          - Unknown</pre>
 
   <h2>Market order</h2>
   <p><b>Auto (US, then Canada)</b> is the default and matches the dealer CLI;
