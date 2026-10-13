@@ -62,6 +62,52 @@ app uses for "Request Signal" authenticates with the SiriusXM dealer **app key
 and secret**. This tool ships no credentials at all, so it uses SiriusXM's own
 public page instead. Nothing here can renew or change a subscription.
 
+## Recent Radio IDs (one click to re-check)
+
+**Recent** in the form row remembers the IDs that have been through the app, so
+you do not have to retype one:
+
+- An ID is remembered when you press **Check Subscription** or **Request Signal
+  View Web**.
+- The menu lists them **newest first**; click one to drop it straight into the
+  Radio ID field (it is not checked on its own — press the button when ready).
+- Each entry carries the **expiry date the last check found**, so the menu reads
+  `DEMO0001 - expires 2099-10-01`. Until a check has produced a date it reads
+  `SAMPLE03 - Unknown`.
+- Reusing an ID moves it back to the top, duplicates collapse, and the list stops
+  at **15** entries, dropping the oldest.
+- **Clear history** at the bottom of the menu empties the list.
+
+It is stored per user, so every Windows account keeps its own list:
+
+```
+%APPDATA%\SXMChecker\history.json
+```
+
+The expiry sits next to each ID so the menu can show it without checking again:
+
+```json
+{
+  "radioIds": [
+    { "id": "DEMO0001", "endDate": "2099-10-01" },
+    { "id": "SAMPLE03", "endDate": "Unknown" }
+  ]
+}
+```
+
+A completed check replaces the stored date; a check that **failed** leaves it
+alone, because nothing was learned, and a radio that comes back with no
+subscription is stored as `Unknown` again. So an entry only ever goes stale
+because a check succeeded.
+
+The write is atomic (a temporary file is renamed over the old one), a missing or
+corrupted file is treated as an empty list rather than an error, and anything
+that is not shaped like a Radio ID / VIN is ignored. A file written by an earlier
+build — plain IDs with no dates — still loads, with `Unknown` expiry. On
+Linux/macOS the folder falls back to `$XDG_DATA_HOME/SXMChecker` or
+`~/.sxm_checker`. The list is a convenience only and holds no credentials; the
+command line (`--check`, `--signal`) never touches it.
+
 ## Run from source
 
 ```sh
@@ -83,7 +129,8 @@ python radioid_checker.py --selftest                     # offline check of the 
 
 `--signal` only prints the official page for the market and the normalised Radio
 ID — nothing is opened or submitted, so it is safe to call from a script. Exit
-code is `0` on success, `1` on a failed check, `2` on bad usage.
+code is `0` on success, `1` on a failed check, `2` on bad usage. These headless
+modes do not read or write the Recent list.
 
 ## Build the standalone .exe (no Python needed by end users)
 
@@ -180,3 +227,8 @@ both work, with no broken images.
 - The window icon depends on `assets/sxm_icon.ico` being bundled; `--selftest`
   checks that it resolved **and** that the file really contains native 16 px and
   32 px frames, so a broken build or a flattened icon is caught immediately.
+- **The Recent list is kept per Windows user**, in
+  `%APPDATA%\SXMChecker\history.json` (up to 15 IDs, each with its expiry or
+  `Unknown`). It holds Radio IDs and expiry dates only — no credentials, no
+  account details — and **Clear history** empties it. Delete that file if you
+  would rather leave no trace at all.

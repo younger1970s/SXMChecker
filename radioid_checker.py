@@ -22,15 +22,22 @@ requires the dealer app key/secret, and this tool deliberately embeds no
 credentials and drives no browser of its own. This app never renews or changes a
 subscription - renewal / trial activation is intentionally out of scope.
 
+Recently used Radio IDs are remembered between runs and offered in a "Recent"
+dropdown for one-click reuse, each with the expiry date the last check found
+("Unknown" when no check has produced one). The list is a plain local file
+(``%APPDATA%\SXMChecker\history.json`` on Windows); nothing is sent anywhere.
+
 Only the Python standard library plus ``requests`` is required. ``build_exe.py``
 freezes this into a single .exe so end users do not need Python installed.
 """
 from __future__ import annotations
 
 import json
+import os
 import queue
 import re
 import sys
+import tempfile
 import threading
 import webbrowser
 from dataclasses import dataclass, field
@@ -140,6 +147,138 @@ def ico_frame_sizes(icon_path):
         width, height = data[entry], data[entry + 1]
         sizes.append((width or 256, height or 256))
     return sizes
+
+
+# ---------------------------------------------------------------------------
+# Recent Radio IDs (remembered between runs for one-click reuse)
+# ---------------------------------------------------------------------------
+# Every remembered entry keeps the Radio ID and the expiry date the last check
+# found, so the list can say when a remembered radio runs out. It reads
+# "Unknown" until a check produces a date.
+
+HISTORY_RELATIVE = "history.json"
+HISTORY_LIMIT = 15          # newest first; older entries fall off the end
+UNKNOWN_EXPIRY = "Unknown"
+
+
+def history_path():
+    """Where the recent-Radio-ID list lives.
+
+    A per-user folder keeps the list writable when running from the frozen
+    .exe, whose own directory is temporary and must not be written to.
+    """
+    base = os.environ.get("APPDATA") or os.environ.get("XDG_DATA_HOME")
+    root = Path(base) / "SXMChecker" if base else Path.home() / ".sxm_checker"
+    return root / HISTORY_RELATIVE
+
+
+def valid_radio_id(value):
+    """True for anything shaped like a Radio ID / VIN / 12-digit id."""
+    return bool(re.fullmatch(r"[A-Z0-9]{8,17}", normalize_id(value or "")))
+
+
+def normalize_expiry(value):
+    """A stored expiry as YYYY-MM-DD, or None when it is not a real date."""
+    return valid_date(value) if isinstance(value, str) else None
+
+
+def _history_entry(raw):
+    """One stored row -> {'id', 'endDate'}, or None when it is unusable.
+
+    Plain strings (the first format this file used) still load, as do a couple of
+    alternative key names, so an older or hand-edited file keeps working.
+    """
+    if isinstance(raw, str):
+        radio_id, expiry = raw, None
+    elif isinstance(raw, dict):
+        radio_id = raw.get("id") or raw.get("radioId") or raw.get("radio_id") or ""
+        expiry = raw.get("endDate") or raw.get("end") or raw.get("expiry") or raw.get("expires")
+    else:
+        return None
+    radio_id = normalize_id(radio_id) if isinstance(radio_id, str) else ""
+    if not valid_radio_id(radio_id):
+        return None
+    return {"id": radio_id, "endDate": normalize_expiry(expiry)}
+
+
+def load_history(path=None):
+    """Remembered Radio IDs, newest first, each with its expiry. Never raises.
+
+    Every entry is ``{'id': 'XCV12345', 'endDate': '2026-10-03'}``; ``endDate`` is
+    None while it is unknown.
+    """
+    try:
+        data = json.loads(Path(path or history_path()).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    rows = data.get("radioIds") if isinstance(data, dict) else data
+    if not isinstance(rows, list):
+        return []
+    seen, ordered = set(), []
+    for raw in rows:
+        entry = _history_entry(raw)
+        if entry and entry["id"] not in seen:
+            seen.add(entry["id"])
+            ordered.append(entry)
+    return ordered[:HISTORY_LIMIT]
+
+
+def history_label(entry):
+    """Menu text for one entry: the Radio ID plus the expiry the checker found."""
+    end = entry["endDate"]
+    return f"{entry['id']} - expires {end}" if end else f"{entry['id']} - {UNKNOWN_EXPIRY}"
+
+
+def save_history(entries, path=None):
+    """Write the list in one atomic step. Returns True on success."""
+    rows = [{"id": entry["id"], "endDate": entry["endDate"] or UNKNOWN_EXPIRY}
+            for entry in entries[:HISTORY_LIMIT]]
+    target = Path(path or history_path())
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(target.name + ".tmp")
+        temporary.write_text(json.dumps({"radioIds": rows}, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(target)
+        return True
+    except OSError:
+        return False
+
+
+def _write_history(entries, *, path=None):
+    """Cap, save and return the list the GUI should now show."""
+    ordered = entries[:HISTORY_LIMIT]
+    save_history(ordered, path)
+    return ordered
+
+
+def remember_radio_id(radio_id, end_date=None, *, path=None):
+    """Move ``radio_id`` to the front and return the new list.
+
+    ``end_date`` is recorded when the caller knows one; passing None keeps the
+    expiry already stored for that ID, so a check that fails (or has not run
+    yet) never erases a date we already learned.
+    """
+    rid = normalize_id(radio_id or "")
+    if not valid_radio_id(rid):
+        return load_history(path)
+    entries = load_history(path)
+    previous = next((entry["endDate"] for entry in entries if entry["id"] == rid), None)
+    front = {"id": rid, "endDate": normalize_expiry(end_date) or previous}
+    return _write_history([front] + [e for e in entries if e["id"] != rid], path=path)
+
+
+def remember_expiry(radio_id, end_date, *, path=None):
+    """Record what a completed check found; None means the date is unknown."""
+    rid = normalize_id(radio_id or "")
+    if not valid_radio_id(rid):
+        return load_history(path)
+    entries = load_history(path)
+    match = next((entry for entry in entries if entry["id"] == rid), None)
+    if match:
+        match["endDate"] = normalize_expiry(end_date)
+        return _write_history(entries, path=path)
+    front = {"id": rid, "endDate": normalize_expiry(end_date)}
+    return _write_history([front] + entries, path=path)
 
 
 # ---------------------------------------------------------------------------
@@ -424,6 +563,91 @@ def run_selftest(out_path=None):
     expect("icon holds native 16px and 32px frames",
            {(16, 16), (32, 32)}.issubset(set(frames)),
            f"frames={sorted({w for w, _h in frames})}")
+    expect("history path is an absolute per-user file",
+           history_path().is_absolute() and history_path().suffix == ".json",
+           str(history_path()))
+    expect("an unknown expiry reads as Unknown",
+           history_label({"id": "ABC12345", "endDate": None}) == "ABC12345 - Unknown",
+           history_label({"id": "ABC12345", "endDate": None}))
+    expect("a known expiry is shown with its date",
+           history_label({"id": "ABC12345", "endDate": "2026-10-03"})
+           == "ABC12345 - expires 2026-10-03",
+           history_label({"id": "ABC12345", "endDate": "2026-10-03"}))
+
+    def ids(entries):
+        return [entry["id"] for entry in entries]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = Path(tmp) / "history.json"
+        expect("history starts empty", load_history(store) == [], str(load_history(store)))
+        remember_radio_id("abc12345", path=store)
+        remember_radio_id("ZZ999999", "2026-10-03", path=store)
+        expect("history keeps the newest first",
+               ids(load_history(store)) == ["ZZ999999", "ABC12345"], str(load_history(store)))
+        expect("the expiry is stored with the id",
+               load_history(store)[0]["endDate"] == "2026-10-03", str(load_history(store)))
+        expect("an unchecked id has no expiry yet",
+               load_history(store)[1]["endDate"] is None, str(load_history(store)))
+        remember_radio_id("abc12345", "2020-01-02", path=store)
+        expect("reusing an id moves it to the front with its date",
+               [(entry["id"], entry["endDate"]) for entry in load_history(store)]
+               == [("ABC12345", "2020-01-02"), ("ZZ999999", "2026-10-03")],
+               str(load_history(store)))
+        remember_radio_id("abc12345", path=store)
+        expect("a check with no date keeps the known expiry",
+               load_history(store)[0] == {"id": "ABC12345", "endDate": "2020-01-02"},
+               str(load_history(store)))
+        remember_expiry("abc12345", "2027-03-04", path=store)
+        expect("a completed check updates the expiry",
+               load_history(store)[0] == {"id": "ABC12345", "endDate": "2027-03-04"},
+               str(load_history(store)))
+        remember_expiry("NEW12345", "2028-01-01", path=store)
+        expect("an id first seen by a check is added with its date",
+               load_history(store)[0] == {"id": "NEW12345", "endDate": "2028-01-01"},
+               str(load_history(store)))
+        remember_expiry("abc12345", None, path=store)
+        expect("an unreadable date is cleared, not guessed",
+               load_history(store)[1] == {"id": "ABC12345", "endDate": None},
+               str(load_history(store)))
+        remember_expiry("abc12345", "not a date", path=store)
+        expect("a malformed date is treated as unknown",
+               load_history(store)[1]["endDate"] is None, str(load_history(store)))
+        expect("the file spells an unknown expiry as Unknown",
+               json.loads(store.read_text(encoding="utf-8"))["radioIds"][1]["endDate"]
+               == UNKNOWN_EXPIRY, store.read_text(encoding="utf-8"))
+        remember_radio_id("bad", path=store)
+        expect("invalid ids are not remembered",
+               ids(load_history(store)) == ["NEW12345", "ABC12345", "ZZ999999"],
+               str(load_history(store)))
+        expect("a missing history file is not an error",
+               load_history(Path(tmp) / "absent.json") == [])
+        store.write_text("{ not json", encoding="utf-8")
+        expect("corrupt history is ignored", load_history(store) == [], str(load_history(store)))
+        store.write_text(json.dumps({"radioIds": ["good1234", 42, None, "GOOD1234", "short"]}),
+                         encoding="utf-8")
+        expect("older string entries still load, with no expiry",
+               load_history(store) == [{"id": "GOOD1234", "endDate": None}],
+               str(load_history(store)))
+        store.write_text(json.dumps({"radioIds": [{"radioId": "ALT12345", "end": "2029-05-06"}]}),
+                         encoding="utf-8")
+        expect("alternative key names still load",
+               load_history(store) == [{"id": "ALT12345", "endDate": "2029-05-06"}],
+               str(load_history(store)))
+
+        store.unlink()
+        for index in range(HISTORY_LIMIT + 5):
+            remember_radio_id(f"SHUNT{index:05d}", path=store)
+        kept = load_history(store)
+        expect("history is capped", len(kept) == HISTORY_LIMIT, f"len={len(kept)}")
+        expect("the newest id survives the cap",
+               kept[0]["id"] == f"SHUNT{HISTORY_LIMIT + 4:05d}", str(ids(kept)[:3]))
+        expect("the oldest ids are dropped", "SHUNT00000" not in ids(kept))
+        expect("history is written as valid json",
+               all(isinstance(row, dict) and "id" in row and "endDate" in row
+                   for row in json.loads(store.read_text(encoding="utf-8")).get("radioIds")))
+        expect("no leftover temp file",
+               not (Path(tmp) / "history.json.tmp").exists())
+
     try:
         source = Path(__file__).read_text(encoding="utf-8")
         expect("no credential-looking literals in the source",
@@ -509,6 +733,13 @@ class CheckerApp:
                                        values=("Auto (US, then Canada)", "Canada first", "US only", "Canada only"))
         self.region_box.grid(row=0, column=3, sticky="w")
 
+        self.history = load_history()
+        self.history_button = ttk.Menubutton(form, text="Recent \u25be")
+        self.history_menu = tk.Menu(self.history_button, tearoff=False)
+        self.history_button.configure(menu=self.history_menu)
+        self.history_button.grid(row=0, column=4, sticky="w", padx=(12, 0))
+        self._refresh_history_menu()
+
         actions = ttk.Frame(main)
         actions.grid(row=3, column=0, sticky="ew", pady=10)
         self.check_button = ttk.Button(actions, text="Check Subscription", command=self.start_check)
@@ -559,6 +790,39 @@ class CheckerApp:
         self.detail.insert("1.0", text)
         self.detail.configure(state="disabled")
 
+    def _refresh_history_menu(self):
+        """Rebuild the Recent dropdown from the remembered Radio IDs."""
+        self.history_menu.delete(0, "end")
+        if not self.history:
+            self.history_menu.add_command(label="(no recent Radio IDs)", state="disabled")
+            return
+        for entry in self.history:
+            self.history_menu.add_command(label=history_label(entry),
+                                          command=lambda rid=entry["id"]: self._use_recent(rid))
+        self.history_menu.add_separator()
+        self.history_menu.add_command(label="Clear history", command=self.clear_history)
+
+    def _use_recent(self, radio_id):
+        """Load a remembered Radio ID into the field, ready to run."""
+        self.radio_var.set(radio_id)
+        self.radio_entry.icursor("end")
+        self.radio_entry.focus_set()
+
+    def _remember(self, radio_id, end_date=None):
+        """Record an ID (with its expiry when known) and refresh the menu."""
+        self.history = remember_radio_id(radio_id, end_date)
+        self._refresh_history_menu()
+
+    def _remember_expiry(self, radio_id, end_date):
+        """Store what a finished check found for an ID."""
+        self.history = remember_expiry(radio_id, end_date)
+        self._refresh_history_menu()
+
+    def clear_history(self):
+        self.history = []
+        save_history([])
+        self._refresh_history_menu()
+
     def clear(self):
         self.radio_var.set("")
         self.last = None
@@ -595,6 +859,9 @@ class CheckerApp:
             "radio. It does not renew or change the subscription.",
         ]
         if radio_id:
+            known = self.last.end_date if (isinstance(self.last, CheckResult)
+                                           and self.last.radio_id == radio_id) else None
+            self._remember(radio_id, known)
             try:
                 self.root.clipboard_clear()
                 self.root.clipboard_append(radio_id)
@@ -634,6 +901,7 @@ class CheckerApp:
         if not radio_id:
             self._set_status("Enter a Radio ID first.", "#fdecea", "#b3261e")
             return
+        self._remember(radio_id)
         prefer = "CA" if self.region_var.get().startswith("Canada") else "US"
         regions = {"US only": ["com"], "Canada only": ["ca"]}.get(self.region_var.get())
         self._run_async(
@@ -654,6 +922,8 @@ class CheckerApp:
         self.check_button.configure(state="normal")
         self.last = result
         self._paint(result)
+        if result.ok and result.radio_id:
+            self._remember_expiry(result.radio_id, result.end_date)
         self.root.after(120, self._poll)
 
     def _paint(self, result):
