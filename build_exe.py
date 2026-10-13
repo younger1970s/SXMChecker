@@ -17,6 +17,11 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 NAME = "RadioIDChecker"
 ICON = HERE / "assets" / "sxm_icon.ico"
+# The Settings button's gear, in both tones and both sizes - the app picks the
+# tone from the theme and the size from the display scaling. Bundled alongside
+# the icon so the button is never blank in a frozen build.
+GEAR_ICONS = tuple(HERE / "assets" / f"settings_gear_{tone}_{size}.png"
+                   for tone in ("dark", "light") for size in (20, 32))
 
 
 def main():
@@ -25,6 +30,10 @@ def main():
         raise SystemExit(f"entry point not found: {entry}")
     if not ICON.exists():
         raise SystemExit(f"icon not found: {ICON} (run: python assets/make_icon.py)")
+    missing = [icon.name for icon in GEAR_ICONS if not icon.exists()]
+    if missing:
+        raise SystemExit(f"missing Settings artwork: {', '.join(missing)}"
+                         " (run: python assets/make_settings_icon.py)")
 
     try:
         import PyInstaller  # noqa: F401
@@ -46,6 +55,9 @@ def main():
         # Window/taskbar icon, and the same file bundled for the Tk window icon.
         "--icon", str(ICON),
         "--add-data", f"{ICON}{os.pathsep}assets",
+        # The Settings gear, for the same reason.
+        *[argument for gear in GEAR_ICONS
+          for argument in ("--add-data", f"{gear}{os.pathsep}assets")],
         str(entry),
     ]
     print("Building:", " ".join(command))
