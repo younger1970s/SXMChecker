@@ -1,0 +1,9 @@
+# PyInstaller build intermediates. dist/RadioIDChecker(.exe) is the deliverable.
+# These files record absolute local build paths, so they must stay untracked.
+build/
+*.spec
+build_log.txt
+*.manifest
+
+__pycache__/
+*.pyc
