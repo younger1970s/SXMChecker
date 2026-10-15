@@ -1,4 +1,4 @@
-# SiriusXM Radio ID Checker
+# SiriusXM Radio ID Checker for Windows
 
 A small standalone GUI that does two things with a Radio ID:
 
