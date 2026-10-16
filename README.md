@@ -1,4 +1,4 @@
-# SiriusXM Radio ID Checker
+# SiriusXM RadioID/VIN Subscription Checker for Windows
 
 A small standalone GUI that does two things with a Radio ID:
 
